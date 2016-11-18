@@ -95,6 +95,9 @@ class DataAccess:
                 logger.debug("Documentlibrary has unique role assignments: %h" % hasuniqueroleassignments)
 
             if r:
+                permissions = []
+                firstdocument = True
+
                 r.raise_for_status()
                 obj = json.loads(r.text)
                 logger.debug("Got %s items from document list" % (str(len(obj["d"]["results"]))))
@@ -110,6 +113,12 @@ class DataAccess:
                             if "d" in usr:
                                 logger.debug("Got %s decument file" % (str(len(usr["d"]["results"]))))
                                 e.update({"file-metadata": usr["d"]})
+                        if firstdocument | hasuniqueroleassignments:
+                            p = requests.get(e["RoleAssignments"]["__deferred"]["uri"], auth=HttpNtlmAuth(user, password), headers=headers)
+                            ra = json.loads(p.text)
+                            if "p" in ra:
+                                permissions = ra["p"]
+                        e.update({"file-permissions": permissions})
 
         logger.debug("Adding %s items to result" % (str(len(entities))))
         self._entities[datatype] = entities
