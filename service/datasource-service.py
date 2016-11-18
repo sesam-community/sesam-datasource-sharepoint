@@ -76,13 +76,24 @@ class DataAccess:
 
         if datatype == "documents":
             logger.info("Reading documents from site: %s" % (siteurl))
+
+            hura = None
             r = None
             if "list-guid" in siteconfig:
                 logger.debug("Reading documents using GUID: %s" % (siteconfig["list-guid"]))
-                r = requests.get(siteurl + "/_api/web/lists/getbyguid('%s')/items?$filter=Modified ge datetime'%s'" %(siteconfig["list-guid"],start), auth=HttpNtlmAuth(user, password), headers=headers)
+                r = requests.get(siteurl + "/_api/web/lists/getbyguid('%s')/items?$filter=Modified ge datetime'%s'" %(siteconfig["list-guid"], start), auth=HttpNtlmAuth(user, password), headers=headers)
+                hura = requests.get(siteurl + "/_api/web/lists/getbyguid('%s')/HasUniqueRoleAssignments" %(siteconfig["list-guid"]), auth=HttpNtlmAuth(user, password), headers=headers)
             elif "list-title" in siteconfig:
                 logger.debug("Reading documents using title: %s" % (siteconfig["list-title"]))
-                r = requests.get(siteurl + "/_api/web/lists/getbytitle('%s')/items?$filter=Modified ge datetime'%s'" %(siteconfig["list-title"],start), auth=HttpNtlmAuth(user, password), headers=headers)
+                r = requests.get(siteurl + "/_api/web/lists/getbytitle('%s')/items?$filter=Modified ge datetime'%s'" %(siteconfig["list-title"], start), auth=HttpNtlmAuth(user, password), headers=headers)
+                hura = requests.get(siteurl + "/_api/web/lists/getbytitle('%s')/HasUniqueRoleAssignments" %(siteconfig["list-title"]), auth=HttpNtlmAuth(user, password), headers=headers)
+
+            hasuniqueroleassignments = True
+            if hura:
+                huraobj = json.loads(hura.text)
+                hasuniqueroleassignments = huraobj["d"]["HasUniqueRoleAssignments"]
+                logger.debug("Documentlibrary has unique role assignments: %h" % hasuniqueroleassignments)
+
             if r:
                 r.raise_for_status()
                 obj = json.loads(r.text)
@@ -106,12 +117,14 @@ class DataAccess:
 
 data_access_layer = DataAccess()
 
+
 def authenticate():
     """Sends a 401 response that enables basic auth"""
     return Response(
-    'Could not verify your access level for that URL.\n'
-    'You have to login with proper credentials', 401,
-    {'WWW-Authenticate': 'Basic realm="Login Required"'})
+        'Could not verify your access level for that URL.\n'
+        'You have to login with proper credentials', 401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'})
+
 
 def requires_auth(f):
     @wraps(f)
@@ -126,7 +139,7 @@ def requires_auth(f):
 def read_config(config_url):
     global config_since
     global config
-    parameter ="?history=false"
+    parameter = "?history=false"
     if config_since:
         parameter = parameter + "&since=%s" %(str(config_since))
 
@@ -147,6 +160,7 @@ def read_config(config_url):
         changed_item_updated = changed_item["_updated"]
         if config_since is None or changed_item_updated > config_since:
             config_since = changed_item_updated
+
 
 @app.route('/<datatype>')
 @requires_auth
