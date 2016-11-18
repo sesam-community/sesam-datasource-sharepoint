@@ -1,5 +1,5 @@
 from functools import wraps
-from flask import Flask, request, Response, abort
+from flask import Flask, request, Response, abort, stream_with_context
 from datetime import datetime, timedelta
 import json
 import requests
@@ -22,19 +22,19 @@ class DataAccess:
     def get_entities(self, since, datatype, user, password):
         if not datatype in self._entities:
             abort(404)
-        result = []
+        yield "["
         for s in config:
             if  "site-url" in config[s]:
                 if since is None:
-                    result.extend( self.get_entitiesdata(config[s], datatype, since, user, password))
+                    self.get_entitiesdata(config[s], datatype, since, user, password)
                 else:
-                    result.extend( [entity for entity in self.get_entitiesdata(config[s], datatype, since) if entity["_updated"] > since])
-        return result
+                    [entity for entity in self.get_entitiesdata(config[s], datatype, since) if entity["_updated"] > since]
+        yield "]"
 
     def get_entitiesdata(self, siteconfig, datatype, since, user, password):
         if datatype in self._entities:
             if len(self._entities[datatype]) > 0 and self._entities[datatype][0]["_updated"] > "%sZ" % (datetime.now() - timedelta(hours=12)).isoformat():
-                return self._entities[datatype]
+                yield json.dumps(self._entities[datatype])
         now = datetime.now()
         start = since
         if since is None:
@@ -51,9 +51,12 @@ class DataAccess:
 
             if "d" in obj:
                 entities = obj["d"]["results"]
-                for e in entities:
+                for index, e in entities:
+                    if index > 0:
+                        yield ","
                     e.update({"_id": str(e["Id"])})
                     e.update({"_updated": now.isoformat()})
+                    yield json.dumps(e)
 
         if datatype == "groups":
             logger.info("Reading groups from site: %s" % (siteurl))
@@ -63,7 +66,9 @@ class DataAccess:
             logger.debug("Got %s items from group list" % (str(len(obj["d"]["results"]))))
             if "d" in obj:
                 entities = obj["d"]["results"]
-                for e in entities:
+                for index, e in entities:
+                    if index > 0:
+                        yield ","
                     e.update({"_id": str(e["Id"])})
                     e.update({"_updated": now.isoformat()})
                     logger.debug("Reading group users from: %s" % (e["Users"]["__deferred"]["uri"]))
@@ -73,11 +78,13 @@ class DataAccess:
                         if "d" in usr:
                             logger.debug("Got %s group users" % (str(len(usr["d"]["results"]))))
                             e.update({"users-metadata": usr["d"]["results"]})
+                    yield json.dumps(e)
 
         if datatype == "documents":
             logger.info("Reading documents from site: %s" % (siteurl))
 
             hura = None
+            first = True
             r = None
             if "list-guid" in siteconfig:
                 logger.debug("Reading documents using GUID: %s" % (siteconfig["list-guid"]))
@@ -92,37 +99,50 @@ class DataAccess:
             if hura:
                 huraobj = json.loads(hura.text)
                 hasuniqueroleassignments = huraobj["d"]["HasUniqueRoleAssignments"]
-                logger.debug("Documentlibrary has unique role assignments: %h" % hasuniqueroleassignments)
+                logger.debug("Documentlibrary has unique role assignments: %r" % hasuniqueroleassignments)
+            next = None
+            while True:
+                if r:
+                    permissions = []
+                    firstdocument = True
 
-            if r:
-                permissions = []
-                firstdocument = True
-
-                r.raise_for_status()
-                obj = json.loads(r.text)
-                logger.debug("Got %s items from document list" % (str(len(obj["d"]["results"]))))
-                if "d" in obj:
-                    entities = obj["d"]["results"]
-                    for e in entities:
-                        e.update({"_id": str(e["Id"])})
-                        e.update({"_updated": str(e["Modified"])})
-                        logger.debug("Reading document file from: %s" % (e["File"]["__deferred"]["uri"]))
-                        r = requests.get(e["File"]["__deferred"]["uri"], auth=HttpNtlmAuth(user, password), headers=headers)
-                        if r.text:
-                            usr = json.loads(r.text)
-                            if "d" in usr:
-                                logger.debug("Got %s decument file" % (str(len(usr["d"]["results"]))))
-                                e.update({"file-metadata": usr["d"]})
-                        if firstdocument | hasuniqueroleassignments:
-                            p = requests.get(e["RoleAssignments"]["__deferred"]["uri"], auth=HttpNtlmAuth(user, password), headers=headers)
-                            ra = json.loads(p.text)
-                            if "p" in ra:
-                                permissions = ra["p"]
-                        e.update({"file-permissions": permissions})
-
+                    r.raise_for_status()
+                    obj = json.loads(r.text)
+                    logger.debug("Got %s items from document list" % (str(len(obj["d"]["results"]))))
+                    if "__next" in obj["d"]:
+                        next = obj["d"]["__next"]
+                        logger.debug("There are still more pages..." )
+                    if "d" in obj:
+                        entities = obj["d"]["results"]
+                        for e in entities:
+                            if not first:
+                                yield ","
+                            else:
+                                first = False
+                            e.update({"_id": str(e["Id"])})
+                            e.update({"_updated": str(e["Modified"])})
+                            logger.debug("Reading document file from: %s" % (e["File"]["__deferred"]["uri"]))
+                            rf = requests.get(e["File"]["__deferred"]["uri"], auth=HttpNtlmAuth(user, password), headers=headers)
+                            if rf.text:
+                                usr = json.loads(rf.text)
+                                if "d" in usr:
+                                    e.update({"file-metadata": usr["d"]})
+                            if firstdocument | hasuniqueroleassignments:
+                                p = requests.get(e["RoleAssignments"]["__deferred"]["uri"], auth=HttpNtlmAuth(user, password), headers=headers)
+                                ra = json.loads(p.text)
+                                if "d" in ra:
+                                    permissions = ra["d"]
+                                    firstdocument = False
+                            e.update({"file-permissions": permissions})
+                            yield json.dumps(e)
+                if next:
+                    r = requests.get(
+                        next, auth=HttpNtlmAuth(user, password), headers=headers)
+                    next = None
+                else:
+                    break
         logger.debug("Adding %s items to result" % (str(len(entities))))
         self._entities[datatype] = entities
-        return self._entities[datatype]
 
 data_access_layer = DataAccess()
 
@@ -184,8 +204,14 @@ def get_entities(datatype):
     if conf:
         read_config(conf)
     auth = request.authorization
-    entities = data_access_layer.get_entities(since, datatype, auth.username, auth.password)
-    return Response(json.dumps(entities), mimetype='application/json')
+    #entities = data_access_layer.get_entities(since, datatype, auth.username, auth.password)
+    #return Response(json.dumps(entities), mimetype='application/json')
+
+    # Generate the response
+    try:
+        return Response(stream_with_context(data_access_layer.get_entities(since, datatype, auth.username, auth.password)), mimetype='application/json')
+    except BaseException as e:
+        return Response(status=500, response="An error occured during transform of input")
 
 if __name__ == '__main__':
     # Set up logging
