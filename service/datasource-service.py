@@ -132,6 +132,7 @@ def read_config(config_url):
 
     logger.info("Reading config dataset from %s" % (config_url + parameter))
     r = requests.get(config_url + parameter)
+    r.raise_for_status()
     logger.debug("Reading config from %s: %s" % (config_url + parameter, r.text))
     change = json.loads(r.text)
     for changed_item in change:
