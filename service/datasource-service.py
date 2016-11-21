@@ -32,9 +32,9 @@ class DataAccess:
         return result
 
     def get_entitiesdata(self, siteconfig, datatype, since, user, password):
-        if datatype in self._entities:
-            if len(self._entities[datatype]) > 0 and self._entities[datatype][0]["_updated"] > "%sZ" % (datetime.now() - timedelta(hours=12)).isoformat():
-                return self._entities[datatype]
+        #if datatype in self._entities:
+        #    if len(self._entities[datatype]) > 0 and self._entities[datatype][0]["_updated"] > "%sZ" % (datetime.now() - timedelta(hours=12)).isoformat():
+        #        return self._entities[datatype]
         now = datetime.now()
         start = since
         if since is None:
@@ -52,8 +52,7 @@ class DataAccess:
             if "d" in obj:
                 entities = obj["d"]["results"]
                 for e in entities:
-                    e.update({"_id": str(e["Id"])})
-                    e.update({"_updated": now.isoformat()})
+                    e.update({"_id": str(e["__metadata"]["uri"])})
 
         if datatype == "groups":
             logger.info("Reading groups from site: %s" % (siteurl))
@@ -64,8 +63,7 @@ class DataAccess:
             if "d" in obj:
                 entities = obj["d"]["results"]
                 for e in entities:
-                    e.update({"_id": str(e["Id"])})
-                    e.update({"_updated": now.isoformat()})
+                    e.update({"_id": str(e["__metadata"]["uri"])})
                     logger.debug("Reading group users from: %s" % (e["Users"]["__deferred"]["uri"]))
                     r = requests.get(e["Users"]["__deferred"]["uri"], auth=HttpNtlmAuth(user, password), headers=headers)
                     if r.text:
@@ -106,9 +104,9 @@ class DataAccess:
                         next = obj["d"]["__next"]
                         logger.debug("There are still more pages..." )
                     if "d" in obj:
-                        entities = obj["d"]["results"]
-                        for e in entities:
-                            e.update({"_id": str(e["Id"])})
+                        ent = obj["d"]["results"]
+                        for e in ent:
+                            e.update({"_id": str(e["__metadata"]["uri"])})
                             e.update({"_updated": str(e["Modified"])})
                             logger.debug("Reading document file from: %s" % (e["File"]["__deferred"]["uri"]))
                             rf = requests.get(e["File"]["__deferred"]["uri"], auth=HttpNtlmAuth(user, password), headers=headers)
@@ -117,12 +115,30 @@ class DataAccess:
                                 if "d" in usr:
                                     e.update({"file-metadata": usr["d"]})
                             if firstdocument | hasuniqueroleassignments:
+                                firstdocument = False
+                                logger.debug("Reading document RoleAssignments from: %s" % (e["RoleAssignments"]["__deferred"]["uri"]))
                                 p = requests.get(e["RoleAssignments"]["__deferred"]["uri"], auth=HttpNtlmAuth(user, password), headers=headers)
                                 ra = json.loads(p.text)
                                 if "d" in ra:
                                     permissions = ra["d"]
-                                    firstdocument = False
+                                    for ro in permissions["results"]:
+                                        logger.debug("Reading document RoleDefinitionBindings from: %s" % (
+                                            ro["RoleDefinitionBindings"]["__deferred"]["uri"]))
+                                        role = requests.get(ro["RoleDefinitionBindings"]["__deferred"]["uri"],
+                                                         auth=HttpNtlmAuth(user, password), headers=headers)
+                                        roo = json.loads(role.text)
+                                        if "d" in roo:
+                                            ro.update({"RoleDefinitionBindings-matadata": roo})
+                                        logger.debug("Reading document Member from: %s" % (
+                                            ro["Member"]["__deferred"]["uri"]))
+                                        member = requests.get(ro["Member"]["__deferred"]["uri"],
+                                                            auth=HttpNtlmAuth(user, password), headers=headers)
+                                        mem = json.loads(member.text)
+                                        if "d" in mem:
+                                            ro.update({"Member-matadata": mem})
                             e.update({"file-permissions": permissions})
+                        entities.extend(ent)
+
                 if next:
                     r = requests.get(
                         next, auth=HttpNtlmAuth(user, password), headers=headers)
