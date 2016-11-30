@@ -40,7 +40,7 @@ class DataAccess:
         if since is None:
             start = (now - timedelta(days=5365)).isoformat()
         siteurl = siteconfig["site-url"]
-        headers = {'accept': 'application/json;odata=verbose'}
+        headers = {'accept': 'application/json;odata=nometadata'}
         entities = []
         if datatype == "users":
             logger.info("Reading users from site: %s" % (siteurl))
@@ -92,11 +92,10 @@ class DataAccess:
                 hasuniqueroleassignments = huraobj["d"]["HasUniqueRoleAssignments"]
                 logger.debug("Documentlibrary has unique role assignments: %r" % hasuniqueroleassignments)
             next = None
+            permissions = []
+            firstdocument = True
             while True:
                 if r:
-                    permissions = []
-                    firstdocument = True
-
                     r.raise_for_status()
                     obj = json.loads(r.text)
                     logger.debug("Got %s items from document list" % (str(len(obj["d"]["results"]))))
