@@ -18,8 +18,10 @@ logger = None
 class DataAccess:
     def __init__(self):
         self._entities = {"users": [], "groups": [], "documents": [], "roleassignments": [], "roledefinitions": [], "folders": [], "items": [], "files": []}
+        self._odata = None
 
-    def get_entities(self, since, datatype, user, password):
+    def get_entities(self, since, datatype, user, password, odata):
+        self._odata = odata
         if not datatype in self._entities:
             abort(404)
         result = []
@@ -40,174 +42,188 @@ class DataAccess:
         if since is None:
             start = (now - timedelta(days=5365)).isoformat()
         siteurl = siteconfig["site-url"]
-        headers = {'accept': 'application/json; odata=minimalmetadata'}
+        listid = None
+        if "list-guid" in siteconfig:
+            listid = "getbyguid('%s')" % (siteconfig["list-guid"])
+        elif "list-title" in siteconfig:
+            listid = "getbytitle('%s')" % (siteconfig["list-title"])
+
+        if self._odata:
+            headers = {'accept': 'application/json; odata=%s' % self._odata}
+        else:
+            headers = {'accept': 'application/json'}
         entities = []
-        if datatype == "users":
+        if datatype == "users" and not listid:
             logger.info("Reading users from site: %s" % (siteurl))
             r = requests.get(siteurl + "/_api/web/siteusers", auth=HttpNtlmAuth(user, password), headers=headers)
             r.raise_for_status()
             obj = json.loads(r.text)
 
-            if "value" in obj:
-                logger.debug("Got %s items from user list" % (str(len(obj["value"]))))
-                entities = obj["value"]
-                for e in entities:
-                    e.update({"_id": e["odata.editLink"]})
+            entities = self.get_result(obj)
+            logger.debug("Got %s items from user list" % (str(len(entities))))
+            for e in entities:
+                e.update(self.get_id(e))
 
-        if datatype == "groups":
+        if datatype == "groups" and not listid:
             logger.info("Reading groups from site: %s" % (siteurl))
             r = requests.get(siteurl + "/_api/web/sitegroups", auth=HttpNtlmAuth(user, password), headers=headers)
             r.raise_for_status()
             obj = json.loads(r.text)
-            if "value" in obj:
-                logger.debug("Got %s items from group list" % (str(len(obj["value"]))))
-                entities = obj["value"]
-                for e in entities:
-                    e.update({"_id": e["odata.editLink"]})
-                    logger.debug("Reading group users from: %s" % (e["odata.id"]))
-                    r = requests.get(e["odata.id"] + "/users", auth=HttpNtlmAuth(user, password), headers=headers)
-                    if r.text:
-                        usr = json.loads(r.text)
-                        if "value" in usr:
-                            logger.debug("Got %s group users" % (str(len(usr["value"]))))
-                            e.update({"users": usr["value"]})
+            entities = self.get_result(obj)
+            logger.debug("Got %s items from group list" % (str(len(entities))))
+            for e in entities:
+                e.update(self.get_id(e))
+                logger.debug("Reading group users from: %s" % (e["_id"]))
+                r = requests.get(self.get_url(e["_id"], siteurl) + "/users", auth=HttpNtlmAuth(user, password), headers=headers)
+                if r.text:
+                    usr = json.loads(r.text)
+                    users = self.get_result(usr)
+                    logger.debug("Got %s group users" % (str(len(users))))
+                    if len(users)>0:
+                        e.update({"users": users})
 
-        if datatype == "roleassignments":
+        if datatype == "roleassignments" and not listid:
             logger.info("Reading roleassignments from site: %s" % (siteurl))
             r = requests.get(siteurl + "/_api/web/roleassignments", auth=HttpNtlmAuth(user, password), headers=headers)
             r.raise_for_status()
             obj = json.loads(r.text)
             if "value" in obj:
-                logger.debug("Got %s items from roleassignments list" % (str(len(obj["value"]))))
-                entities = obj["value"]
+                logger.debug("Got %s items from roleassignments list" % (str(len(self.get_result(obj)))))
+                entities = self.get_result(obj)
                 for e in entities:
-                    e.update({"_id": e["odata.editLink"]})
-                    logger.debug("Reading roleassignments member from: %s" % (e["odata.id"]))
-                    r = requests.get(e["odata.id"] + "/member", auth=HttpNtlmAuth(user, password), headers=headers)
+                    e.update(self.get_id(e))
+                    logger.debug("Reading roleassignments member from: %s" % (e["_id"]))
+                    r = requests.get(self.get_url(e["_id"], siteurl) + "/member", auth=HttpNtlmAuth(user, password), headers=headers)
                     if r.text:
                         usr = json.loads(r.text)
                         if "odata.editLink" in usr:
                             e.update({"member": usr["odata.editLink"]})
-                    logger.debug("Reading roleassignments roledefinitionbindings from: %s" % (e["odata.id"]))
-                    r = requests.get(e["odata.id"] + "/roledefinitionbindings", auth=HttpNtlmAuth(user, password), headers=headers)
+                    logger.debug("Reading roleassignments roledefinitionbindings from: %s" % (e["_id"]))
+                    r = requests.get(self.get_url(e["_id"], siteurl) + "/roledefinitionbindings", auth=HttpNtlmAuth(user, password), headers=headers)
                     if r.text:
                         e.update({"roledefinitions": []})
                         usr = json.loads(r.text)
                         if "value" in usr:
-                            logger.debug("Got %s roledefinitionbindings" % (str(len(usr["value"]))))
-                            for r in usr["value"]:
+                            logger.debug("Got %s roledefinitionbindings" % (str(len(self.get_result(usr)))))
+                            for r in self.get_result(usr):
                                 e["roledefinitions"].append(r["odata.editLink"])
 
-        if datatype == "roledefinitions":
+        if datatype == "roledefinitions" and not listid:
             logger.info("Reading roledefinitions from site: %s" % (siteurl))
             r = requests.get(siteurl + "/_api/web/roledefinitions", auth=HttpNtlmAuth(user, password), headers=headers)
             r.raise_for_status()
             obj = json.loads(r.text)
             if "value" in obj:
-                logger.debug("Got %s items from roledefinitions list" % (str(len(obj["value"]))))
-                entities = obj["value"]
+                logger.debug("Got %s items from roledefinitions list" % (str(len(self.get_result(obj)))))
+                entities = self.get_result(obj)
                 for e in entities:
-                    e.update({"_id": e["odata.editLink"]})
+                    e.update(self.get_id(e))
 
-        if datatype == "folders":
-            logger.info("Reading folders from site: %s" % (siteurl))
+        if datatype == "folders" and not listid:
+            logger.info("Reading folders from : %s" % (siteurl + "_api/web/folders"))
             r = requests.get(siteurl + "_api/web/folders", auth=HttpNtlmAuth(user, password), headers=headers)
             r.raise_for_status()
             obj = json.loads(r.text)
             if "value" in obj:
-                logger.debug("Got %s items from folders list" % (str(len(obj["value"]))))
-                entities = obj["value"]
+                logger.debug("Got %s items from folders list" % (str(len(self.get_result(obj)))))
+                entities = self.get_result(obj)
                 for e in entities:
-                    e.update({"_id": e["odata.editLink"]})
+                    e.update(self.get_id(e))
 
-        if datatype == "files":
-            logger.info("Reading folders from site: %s" % (siteurl))
+        if datatype == "files" and not listid:
+            logger.info("Reading folders from site: %s" % (siteurl + "_api/web/folders"))
             r = requests.get(siteurl + "_api/web/folders", auth=HttpNtlmAuth(user, password), headers=headers)
             r.raise_for_status()
             obj = json.loads(r.text)
             entities = []
             if "value" in obj:
-                logger.debug("Got %s items from folders list" % (str(len(obj["value"]))))
-                folders = obj["value"]
+                logger.debug("Got %s items from folders list" % (str(len(self.get_result(obj)))))
+                folders = self.get_result(obj)
                 for f in folders:
                     logger.debug("Reading folder files from: %s" % (f["odata.id"]))
-                    r = requests.get(f["odata.id"] + "/files?$filter=TimeLastModified ge datetime'%s'" %(start), auth=HttpNtlmAuth(user, password), headers=headers)
+                    r = requests.get(self.get_url(f["odata.id"], siteurl) + "/files?$filter=TimeLastModified ge datetime'%s'" %(start), auth=HttpNtlmAuth(user, password), headers=headers)
                     if r.text:
                         usr = json.loads(r.text)
-                        if "value" in usr and len(usr["value"])>0:
-                            for e in usr["value"]:
-                                e.update({"_id": e["odata.editLink"]})
+                        if "value" in usr and len(self.get_result(usr))>0:
+                            for e in self.get_result(usr):
+                                e.update(self.get_id(e))
                                 e.update({"folder": f["odata.editLink"]})
                                 e.update({"_updated": str(e["TimeLastModified"])})
-                            entities.extend(usr["value"])
+                            entities.extend(self.get_result(usr))
 
 
         if datatype == "items":
-            logger.info("Reading documents from site: %s" % (siteurl))
+            if not listid:
+                logger.info("Ignoring lists in site: %s" % (siteurl))
+            else:
 
-            hura = None
-            r = None
-            if "list-guid" in siteconfig:
-                logger.debug("Reading documents using GUID: %s" % (siteconfig["list-guid"]))
-                r = requests.get(siteurl + "_api/web/lists/getbyguid('%s')/items?$filter=Modified ge datetime'%s'" %(siteconfig["list-guid"], start), auth=HttpNtlmAuth(user, password), headers=headers)
-                hura = requests.get(siteurl + "_api/web/lists/getbyguid('%s')/HasUniqueRoleAssignments" %(siteconfig["list-guid"]), auth=HttpNtlmAuth(user, password), headers=headers)
-            elif "list-title" in siteconfig:
-                logger.debug("Reading documents using title: %s" % (siteconfig["list-title"]))
-                r = requests.get(siteurl + "_api/web/lists/getbytitle('%s')/items?$filter=Modified ge datetime'%s'" %(siteconfig["list-title"], start), auth=HttpNtlmAuth(user, password), headers=headers)
-                hura = requests.get(siteurl + "_api/web/lists/getbytitle('%s')/HasUniqueRoleAssignments" %(siteconfig["list-title"]), auth=HttpNtlmAuth(user, password), headers=headers)
+                logger.info("Reading documents from site: %s" % (siteurl))
 
-            hasuniqueroleassignments = False
-            if hura.text:
-                logger.debug("HasUniqueRoleAssignments returns: %s" %(hura.text))
-                huraobj = json.loads(hura.text)
-                hasuniqueroleassignments = huraobj["value"]
-                logger.debug("Documentlibrary has unique role assignments: %r" % hasuniqueroleassignments)
-            next = None
-            permissions = []
-            firstdocument = True
-            while True:
-                if r:
-                    r.raise_for_status()
-                    obj = json.loads(r.text)
-                    logger.debug("Got %s items from document list" % (str(len(obj["value"]))))
-                    if "odata.nextLink" in obj:
-                        next = obj["odata.nextLink"]
-                        logger.debug("There are still more pages..." )
-                    if "value" in obj:
-                        ent = obj["value"]
+                logger.debug("Reading documents using: %s" % (listid))
+                r = requests.get(siteurl + "_api/web/lists/%s/items?$filter=Modified ge datetime'%s'" %(listid, start), auth=HttpNtlmAuth(user, password), headers=headers)
+                hura = requests.get(siteurl + "_api/web/lists/%s/HasUniqueRoleAssignments" %(listid), auth=HttpNtlmAuth(user, password), headers=headers)
+
+                hasuniqueroleassignments = self.is_uniqe(hura)
+                next = None
+                permissions = []
+                firstdocument = True
+                while True:
+                    if r:
+                        r.raise_for_status()
+                        obj = json.loads(r.text)
+                        logger.debug("Got %s items from document list" % (str(len(self.get_result(obj)))))
+                        next = self.get_next(obj)
+                        ent = self.get_result(obj)
                         for e in ent:
-                            e.update({"_id": e["odata.editLink"]})
+                            e.update(self.get_id(e))
                             e.update({"_updated": str(e["Modified"])})
-                            # logger.debug("Reading document file from: %s" % (siteurl + "_api/" + e["odata.id"] + "/File"))
-                            # rf = requests.get(siteurl + "_api/" + e["odata.id"] + "/File", auth=HttpNtlmAuth(user, password), headers=headers)
-                            # if (rf.text and rf.ok) or "file" in e:
-                            #     usr = json.loads(rf.text)
-                            #     if not "odata.null" in usr:
-                            #         e.update({"file": usr})
+                            logger.debug("Reading document file from: %s" % (siteurl + "_api/" + e["_id"] + "/File"))
+                            rf = requests.get(siteurl + "_api/" + e["_id"] + "/File", auth=HttpNtlmAuth(user, password), headers=headers)
+                            if (rf.text and rf.ok) or "file" in e:
+                                usr = json.loads(rf.text)
+                                if not "odata.null" in usr and not ("d" in usr and "File" in usr["d"] and usr["d"]["File"] == None):
+                                    e.update({"file": usr})
+                            logger.debug("Reading document folder from: %s" % (siteurl + "_api/" + e["_id"] + "/Folder"))
+                            rf = requests.get(siteurl + "_api/" + e["_id"] + "/Folder", auth=HttpNtlmAuth(user, password), headers=headers)
+                            if (rf.text and rf.ok) or "folder" in e:
+                                usr = json.loads(rf.text)
+                                if not "odata.null" in usr and not ("d" in usr and "Folder" in usr["d"] and usr["d"]["Folder"] == None):
+                                    e.update({"folder": usr})
                             if  firstdocument or hasuniqueroleassignments:
-                                firstdocument = False
-                                logger.debug("Reading document RoleAssignments from: %s" % (
-                                siteurl + "_api/" + e["odata.id"] + "/RoleAssignments"))
-                                permissions = []
-                                rf = requests.get(siteurl + "_api/" + e["odata.id"] + "/RoleAssignments",
-                                                  auth=HttpNtlmAuth(user, password), headers=headers)
-                                if (rf.text and rf.ok) or "file" in e:
-                                    obj = json.loads(rf.text)
-                                    if "value" in obj:
-                                        logger.debug(
-                                            "Got %s RoleAssignments from items list" % (str(len(obj["value"]))))
-                                        for r in obj["value"]:
-                                            permissions.append(r["odata.editLink"])
+                                runcheck = True
+                                if firstdocument:
+                                    firstdocument = False
+                                else:
+                                    hura = requests.get(
+                                        self.get_url(e["_id"], siteurl) + "/HasUniqueRoleAssignments" ,
+                                        auth=HttpNtlmAuth(user, password), headers=headers)
+                                    hasuniqueroleassignments = self.is_uniqe(hura)
+                                    runcheck = hasuniqueroleassignments
+
+                                if runcheck:
+                                    firstdocument = False
+                                    logger.debug("Reading document RoleAssignments from: %s" % (
+                                        self.get_url(e["_id"], siteurl) + "/RoleAssignments"))
+                                    permissions = []
+                                    rf = requests.get(self.get_url(e["_id"], siteurl) + "/RoleAssignments",
+                                                      auth=HttpNtlmAuth(user, password), headers=headers)
+                                    if (rf.text and rf.ok) or "file" in e:
+                                        obj = json.loads(rf.text)
+                                        if "value" in obj:
+                                            logger.debug(
+                                                "Got %s RoleAssignments from items list" % (str(len(self.get_result(obj)))))
+                                            for r in self.get_result(obj):
+                                                permissions.append(self.get_id(r))
 
                             e.update({"file-permissions": permissions})
                         entities.extend(ent)
 
-                if next:
-                    r = requests.get(
-                        next, auth=HttpNtlmAuth(user, password), headers=headers)
-                    next = None
-                else:
-                    break
+                    if next:
+                        r = requests.get(
+                            next, auth=HttpNtlmAuth(user, password), headers=headers)
+                        next = None
+                    else:
+                        break
 
 
         if datatype == "documents":
@@ -227,7 +243,7 @@ class DataAccess:
             hasuniqueroleassignments = True
             if hura:
                 huraobj = json.loads(hura.text)
-                hasuniqueroleassignments = huraobj["value"]
+                hasuniqueroleassignments = self.get_result(huraobj)
                 logger.debug("Documentlibrary has unique role assignments: %r" % hasuniqueroleassignments)
             next = None
             permissions = []
@@ -236,14 +252,13 @@ class DataAccess:
                 if r:
                     r.raise_for_status()
                     obj = json.loads(r.text)
-                    logger.debug("Got %s items from document list" % (str(len(obj["value"]))))
-                    if "odata.nextLink" in obj:
-                        next = obj["odata.nextLink"]
-                        logger.debug("There are still more pages..." )
+                    logger.debug("Got %s items from document list" % (str(len(self.get_result(obj)))))
+                    next = self.get_next(obj)
+
                     if "value" in obj:
-                        ent = obj["value"]
+                        ent = self.get_result(obj)
                         for e in ent:
-                            e.update({"_id": e["odata.editLink"]})
+                            e.update(self.get_id(e))
                             e.update({"_updated": str(e["Modified"])})
                             if firstdocument | hasuniqueroleassignments:
                                 firstdocument = False
@@ -279,6 +294,49 @@ class DataAccess:
         logger.debug("Adding %s items to result" % (str(len(entities))))
         self._entities[datatype] = entities
         return self._entities[datatype]
+
+    def get_url(self, id, siteurl):
+        if id.startswith(siteurl):
+            url = id
+        url = siteurl + "_api/" + id
+        logger.debug("Using %s as URL" % (url))
+        return url
+
+    def is_uniqe(self, hura):
+        hasuniqueroleassignments = False
+        if hura.text:
+            logger.debug("HasUniqueRoleAssignments returns: %s" % (hura.text))
+            huraobj = json.loads(hura.text)
+            if self._odata and self._odata == "verbose" and "d" in huraobj:
+                hasuniqueroleassignments = huraobj["d"]["HasUniqueRoleAssignments"]
+            else:
+                hasuniqueroleassignments = huraobj["value"]
+            logger.debug("Documentlibrary has unique role assignments: %r" % hasuniqueroleassignments)
+        return hasuniqueroleassignments
+
+    def get_result(self, obj):
+        if self._odata and self._odata=="verbose" and "d" in obj:
+            return obj["d"]["results"]
+        elif "value" in obj:
+            return obj["value"]
+        else:
+            return {}
+
+    def get_id(self, e):
+        if self._odata and self._odata=="verbose":
+            return {"_id": e["__metadata"]["id"]}
+        else:
+            return {"_id": e["odata.editLink"]}
+
+
+    def get_next(self, e):
+        if self._odata and self._odata == "verbose" and "__next" in e["d"]:
+            return e["d"]["__next"]
+        elif "odata.nextLink" in e:
+            return e["odata.nextLink"]
+        logger.debug("No more pages...")
+        return None
+
 
 data_access_layer = DataAccess()
 
@@ -332,16 +390,24 @@ def read_config(config_url):
 def get_entities(datatype):
     logger.info("Get %s using request: %s" % (datatype, request.url))
     since = request.args.get('since')
-    conf = None
-    if 'CONFIG_DATASET' in os.environ:
-        conf = os.environ['CONFIG_DATASET']
-    if not conf:
-        conf = request.args.get('config-dataset')
+    conf = get_var("config_dataset")
+    odata = get_var("odata")
     if conf:
         read_config(conf)
     auth = request.authorization
-    entities = data_access_layer.get_entities(since, datatype, auth.username, auth.password)
+    entities = data_access_layer.get_entities(since, datatype, auth.username, auth.password, odata)
     return Response(json.dumps(entities), mimetype='application/json')
+
+
+def get_var(var):
+    envvar = None
+    if var.upper() in os.environ:
+        envvar = os.environ[var.upper()]
+    else:
+        envvar = request.args.get(var)
+    logger.info("Setting %s = %s" % (var, envvar))
+    return envvar
+
 
 if __name__ == '__main__':
     # Set up logging
