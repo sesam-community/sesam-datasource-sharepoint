@@ -153,15 +153,15 @@ class DataAccess:
                 logger.debug("Got %s items from folders list" % (str(len(self.get_result(obj)))))
                 folders = self.get_result(obj)
                 for f in folders:
-                    logger.debug("Reading folder files from: %s" % (f["odata.id"]))
+                    logger.debug("Reading folder files from: %s" % (self.get_fullid(f)))
                     r = requests.get(
-                        self.get_url(f["odata.id"], siteurl) + "/files?$filter=TimeLastModified ge datetime'%s'" % (
+                        self.get_url(self.get_fullid(f), siteurl) + "/files?$filter=TimeLastModified ge datetime'%s'" % (
                         start), auth=HttpNtlmAuth(user, password), headers=headers)
                     if r.text:
                         usr = json.loads(r.text)
                         for e in self.get_result(usr):
                             e.update(self.get_id(e))
-                            e.update({"folder": f["odata.editLink"]})
+                            e.update({"folder": self.get_id(f)})
                             e.update({"_updated": str(e["TimeLastModified"])})
                         entities.extend(self.get_result(usr))
 
@@ -327,9 +327,15 @@ class DataAccess:
 
         return self._entities[datatype]
 
+    def get_fullid(self, f):
+        if self._odata and self._odata == "verbose":
+            return f["__metadata"]["id"]
+        else:
+            return f["odata.id"]
+
     def get_url(self, id, siteurl):
         if id.startswith(siteurl):
-            url = id
+            return id
         url = siteurl + "_api/" + id
         logger.debug("Using %s as URL" % (url))
         return url
