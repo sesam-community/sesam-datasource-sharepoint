@@ -21,8 +21,9 @@ _lock_config = threading.Lock()
 class DataAccess:
     def __init__(self):
         self._entities = {"users": [], "groups": [], "documents": [], "roleassignments": [], "roledefinitions": [],
-                          "folders": [], "items": [], "files": []}
+                          "folders": [], "items": [], "files": [], "sites": []}
         self._odata = None
+        self._siteurl = None
 
     def get_entities(self, since, datatype, user, password, odata):
         self._odata = odata
@@ -54,6 +55,7 @@ class DataAccess:
             if since is None:
                 start = (now - timedelta(days=5365)).isoformat()
             siteurl = siteconfig["site-url"]
+            self._siteurl = siteurl
             listid = None
             if "list-guid" in siteconfig:
                 listid = "getbyguid('%s')" % (siteconfig["list-guid"])
@@ -65,28 +67,39 @@ class DataAccess:
             else:
                 headers = {'accept': 'application/json'}
             entities = []
+            if datatype == "sites" and not listid:
+                logger.info("Reading sites: %s" % (siteurl))
+                r = requests.get(siteurl + "_api/web", auth=HttpNtlmAuth(user, password), headers=headers)
+                r.raise_for_status()
+                e = json.loads(r.text)
+                e.update({"site": siteurl})
+                e.update(self.get_id(e))
+                entities.append(e)
+
             if datatype == "users" and not listid:
                 logger.info("Reading users from site: %s" % (siteurl))
-                r = requests.get(siteurl + "/_api/web/siteusers", auth=HttpNtlmAuth(user, password), headers=headers)
+                r = requests.get(siteurl + "_api/web/siteusers", auth=HttpNtlmAuth(user, password), headers=headers)
                 r.raise_for_status()
                 obj = json.loads(r.text)
 
                 entities = self.get_result(obj)
                 logger.debug("Got %s items from user list" % (str(len(entities))))
                 for e in entities:
+                    e.update({"site": siteurl})
                     e.update(self.get_id(e))
 
             if datatype == "groups" and not listid:
                 logger.info("Reading groups from site: %s" % (siteurl))
-                r = requests.get(siteurl + "/_api/web/sitegroups", auth=HttpNtlmAuth(user, password), headers=headers)
+                r = requests.get(siteurl + "_api/web/sitegroups", auth=HttpNtlmAuth(user, password), headers=headers)
                 r.raise_for_status()
                 obj = json.loads(r.text)
                 entities = self.get_result(obj)
                 logger.debug("Got %s items from group list" % (str(len(entities))))
                 for e in entities:
                     e.update(self.get_id(e))
+                    e.update({"site": siteurl})
                     logger.debug("Reading group users from: %s" % (e["_id"]))
-                    r = requests.get(self.get_url(e["_id"], siteurl) + "/users", auth=HttpNtlmAuth(user, password),
+                    r = requests.get(self.get_url(e["_id"]) + "/users", auth=HttpNtlmAuth(user, password),
                                      headers=headers)
                     if r.text:
                         usr = json.loads(r.text)
@@ -97,7 +110,7 @@ class DataAccess:
 
             if datatype == "roleassignments" and not listid:
                 logger.info("Reading roleassignments from site: %s" % (siteurl))
-                r = requests.get(siteurl + "/_api/web/roleassignments", auth=HttpNtlmAuth(user, password),
+                r = requests.get(siteurl + "_api/web/roleassignments", auth=HttpNtlmAuth(user, password),
                                  headers=headers)
                 r.raise_for_status()
                 obj = json.loads(r.text)
@@ -105,15 +118,16 @@ class DataAccess:
                 entities = self.get_result(obj)
                 for e in entities:
                     e.update(self.get_id(e))
+                    e.update({"site": siteurl})
                     logger.debug("Reading roleassignments member from: %s" % (e["_id"]))
-                    r = requests.get(self.get_url(e["_id"], siteurl) + "/member", auth=HttpNtlmAuth(user, password),
+                    r = requests.get(self.get_url(e["_id"]) + "/member", auth=HttpNtlmAuth(user, password),
                                      headers=headers)
                     if r.text:
                         logger.debug("Request result: %s" % (r.text))
                         usr = json.loads(r.text)
                         e.update({"member": self.get_member(usr)})
                     logger.debug("Reading roleassignments roledefinitionbindings from: %s" % (e["_id"]))
-                    r = requests.get(self.get_url(e["_id"], siteurl) + "/roledefinitionbindings",
+                    r = requests.get(self.get_url(e["_id"]) + "/roledefinitionbindings",
                                      auth=HttpNtlmAuth(user, password), headers=headers)
                     if r.text:
                         logger.debug("Request result: %s" % (r.text))
@@ -125,7 +139,7 @@ class DataAccess:
 
             if datatype == "roledefinitions" and not listid:
                 logger.info("Reading roledefinitions from site: %s" % (siteurl))
-                r = requests.get(siteurl + "/_api/web/roledefinitions", auth=HttpNtlmAuth(user, password),
+                r = requests.get(siteurl + "_api/web/roledefinitions", auth=HttpNtlmAuth(user, password),
                                  headers=headers)
                 r.raise_for_status()
                 obj = json.loads(r.text)
@@ -133,6 +147,7 @@ class DataAccess:
                 entities = self.get_result(obj)
                 for e in entities:
                     e.update(self.get_id(e))
+                    e.update({"site": siteurl})
 
             if datatype == "folders" and not listid:
                 logger.info("Reading folders from : %s" % (siteurl + "_api/web/folders"))
@@ -143,6 +158,7 @@ class DataAccess:
                 entities = self.get_result(obj)
                 for e in entities:
                     e.update(self.get_id(e))
+                    e.update({"site": siteurl})
 
             if datatype == "files" and not listid:
                 logger.info("Reading folders from site: %s" % (siteurl + "_api/web/folders"))
@@ -155,11 +171,12 @@ class DataAccess:
                 for f in folders:
                     logger.debug("Reading folder files from: %s" % (self.get_fullid(f)))
                     r = requests.get(
-                        self.get_url(self.get_fullid(f), siteurl) + "/files?$filter=TimeLastModified ge datetime'%s'" % (
+                        self.get_url(self.get_fullid(f)) + "/files?$filter=TimeLastModified ge datetime'%s'" % (
                         start), auth=HttpNtlmAuth(user, password), headers=headers)
                     if r.text:
                         usr = json.loads(r.text)
                         for e in self.get_result(usr):
+                            e.update({"site": siteurl})
                             e.update(self.get_id(e))
                             e.update({"folder": self.get_id(f)})
                             e.update({"_updated": str(e["TimeLastModified"])})
@@ -193,9 +210,10 @@ class DataAccess:
                             for e in ent:
                                 e.update(self.get_id(e))
                                 e.update({"_updated": str(e["Modified"])})
+                                e.update({"site": siteurl})
                                 logger.debug(
-                                    "Reading document file from: %s" % (siteurl + "_api/" + e["_id"] + "/File"))
-                                rf = requests.get(siteurl + "_api/" + e["_id"] + "/File",
+                                    "Reading document file from: %s" % (e["_id"] + "/File"))
+                                rf = requests.get(e["_id"] + "/File",
                                                   auth=HttpNtlmAuth(user, password), headers=headers)
                                 if (rf.text and rf.ok) or "file" in e:
                                     usr = json.loads(rf.text)
@@ -203,8 +221,8 @@ class DataAccess:
                                                 "d" in usr and "File" in usr["d"] and usr["d"]["File"] == None):
                                         e.update({"file": usr})
                                 logger.debug(
-                                    "Reading document folder from: %s" % (siteurl + "_api/" + e["_id"] + "/Folder"))
-                                rf = requests.get(siteurl + "_api/" + e["_id"] + "/Folder",
+                                    "Reading document folder from: %s" % (e["_id"] + "/Folder"))
+                                rf = requests.get(e["_id"] + "/Folder",
                                                   auth=HttpNtlmAuth(user, password), headers=headers)
                                 if (rf.text and rf.ok) or "folder" in e:
                                     usr = json.loads(rf.text)
@@ -217,7 +235,7 @@ class DataAccess:
                                         firstdocument = False
                                     else:
                                         hura = requests.get(
-                                            self.get_url(e["_id"], siteurl) + "/HasUniqueRoleAssignments",
+                                            self.get_url(e["_id"]) + "/HasUniqueRoleAssignments",
                                             auth=HttpNtlmAuth(user, password), headers=headers)
                                         hasuniqueroleassignments = self.is_uniqe(hura)
                                         runcheck = hasuniqueroleassignments
@@ -225,15 +243,15 @@ class DataAccess:
                                     if runcheck:
                                         firstdocument = False
                                         logger.debug("Reading document RoleAssignments from: %s" % (
-                                            self.get_url(e["_id"], siteurl) + "/RoleAssignments"))
+                                            self.get_url(e["_id"]) + "/RoleAssignments"))
                                         permissions = []
-                                        rf = requests.get(self.get_url(e["_id"], siteurl) + "/RoleAssignments",
+                                        rf = requests.get(self.get_url(e["_id"]) + "/RoleAssignments",
                                                           auth=HttpNtlmAuth(user, password), headers=headers)
                                         obj = json.loads(rf.text)
                                         logger.debug(
                                             "Got %s RoleAssignments from items list" % (str(len(self.get_result(obj)))))
                                         for r in self.get_result(obj):
-                                            permissions.append(self.get_id(r))
+                                            permissions.append(self.get_url(self.get_id(r)["_id"].replace(e["_id"],"Web")))
 
                                 e.update({"file-permissions": permissions})
                             entities.extend(ent)
@@ -333,18 +351,18 @@ class DataAccess:
         else:
             return f["odata.id"]
 
-    def get_url(self, id, siteurl):
-        if id.startswith(siteurl):
+    def get_url(self, id):
+        if id.startswith(self._siteurl):
             return id
-        url = siteurl + "_api/" + id
+        url = self._siteurl + "_api/" + id
         logger.debug("Using %s as URL" % (url))
         return url
 
     def get_member(self, usr):
         if "d" in usr:
-            return usr["d"]["__metadata"]["id"]
+            return self.get_url(usr["d"]["__metadata"]["id"])
         if "odata.editLink" in usr:
-            return usr["odata.editLink"]
+            return self.get_url(usr["odata.editLink"])
         return {}
 
     def is_uniqe(self, hura):
@@ -369,9 +387,9 @@ class DataAccess:
 
     def get_id(self, e):
         if self._odata and self._odata == "verbose":
-            return {"_id": e["__metadata"]["id"]}
+            return {"_id": self.get_url(e["__metadata"]["id"])}
         else:
-            return {"_id": e["odata.editLink"]}
+            return {"_id": self.get_url(e["odata.id"])}
 
     def get_next(self, e):
         if self._odata and self._odata == "verbose" and "__next" in e["d"]:
@@ -502,4 +520,4 @@ if __name__ == '__main__':
 
     logger.setLevel(logging.DEBUG)
 
-    app.run(debug=True, host='0.0.0.0')
+    app.run(threaded=True, debug=True, host='0.0.0.0')
